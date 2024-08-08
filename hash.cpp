@@ -4,7 +4,7 @@
 #include <iostream>
 
 // use lower bits of state as hash/TT index
-constexpr int hash_bits{28};
+constexpr int hash_bits{28}; // 512 Mb
 constexpr int hash_bits_comp{64 - hash_bits};
 constexpr size_t n_entries{1ULL << hash_bits};
 
@@ -34,11 +34,7 @@ std::string to_string(uint64_t x) {
   return result;
 }
 
-// state definition. To keep it simple, the state is a 64 bit which is also
-// basically a hash. applying a move is repeated xor_shifting, the number
-// depending on the action this means transpositions are bound to happen
 template <size_t moves, bool debug = false> struct State {
-  // highest bit is player to move
   uint64_t data;
 
   constexpr std::array<int, moves> get_moves() const {
@@ -53,30 +49,26 @@ template <size_t moves, bool debug = false> struct State {
   // player one to move if most sig bit is 0
   bool player_one_to_move() const { return !(data >> 63); }
 
-  // Designed to cause transpositions of the state
   void apply_move(const int action) {
-    uint64_t next_player_bit = (data >> 63) ^ 1;
-    const int offset = player_one_to_move() ? 0 : 1;
-
     static int diffs[]{2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
-    // std::cout << to_string(data) << " :start - apply move" << std::endl;
-    data = (data << 1) >> 1;
-    // std::cout << to_string(data) << " :no player bit - apply move" <<
-    // std::endl;
+
+    const uint64_t next_player_bit = (data >> 63) ^ 1;
+    const int offset = player_one_to_move() ? 0 : 1;
     const int index = 2 * action + offset;
+
+    // remove player-to-move bit, apply shifts, then re-apply new bit
+    data = (data << 1) >> 1;
     for (int i = 0; i < diffs[index]; ++i) {
       data = xorshift(data);
-      //   std::cout << to_string(data) << " :shift - apply move" << std::endl;
     }
     data = b(data);
     data = data ^ (next_player_bit << 63);
-    // std::cout << to_string(data) << " :end - apply move" << std::endl;
-    // std::cout << std::endl;
   }
 
   uint64_t value() const { return data & 0xFF; }
 
-  // expets "63 bit" input aka player to move bit is removed
+  // The xor shifts all operate on only the lower bits, i.e. they ignore the
+  // player to move bit
   uint64_t xorshift(uint64_t x) const {
     x ^= x >> 13;
     x ^= (x << (7 + 1)) >> 1;
@@ -188,23 +180,35 @@ void test() {
   std::cout << state_b.data << std::endl;
 }
 
-void search() {
-  State<4> state{initial_state_data};
+template <size_t moves, bool use_tt> void search() {
+  using StateT = State<moves>;
+  StateT state{initial_state_data};
+  std::cout << "max moves " << moves << std::endl;
+  std::cout << "using transposition table: "
+            << std::string{use_tt ? "yes" : "no"} << std::endl;
 
-  const int max_depth = 15;
+  const int max_depth = 20;
   BaseData base_data{max_depth};
 
-  const auto root_value = alpha_beta<State<4>, true>(state, base_data);
-
+  const auto start = std::chrono::high_resolution_clock::now();
+  const auto root_value = alpha_beta<StateT, use_tt>(state, base_data);
+  const auto end = std::chrono::high_resolution_clock::now();
+  const size_t ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   std::cout << "depth: " << base_data.depth_remaining << std::endl;
   std::cout << "count: " << base_data.count << std::endl;
   std::cout << "cache hits: " << base_data.cache_hits << std::endl;
-  std::cout << "root_value: " << root_value << std::endl;
-  std::cout << "root value estimate: " << state.value() << std::endl;
+  std::cout << "time (ms): " << ms << std::endl;
+  //   std::cout << "value: " << root_value << std::endl;
+  //   std::cout << "root value estimate: " << state.value() << std::endl;
+  std::cout << std::endl;
 }
 
 int main() {
   //   test();
-  search();
+  search<5, true>();
+  search<5, false>();
+
   return 0;
 }
