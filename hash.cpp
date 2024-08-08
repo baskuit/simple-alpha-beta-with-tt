@@ -16,7 +16,7 @@ struct Entry {
   void set(uint64_t value, int move) {
     this->value = static_cast<uint8_t>(value);
     this->move = static_cast<uint8_t>(move);
-    this->move &= (1 << 7);
+    this->move |= (1 << 7);
   }
 
   bool is_set() const { return move & (1 << 7); }
@@ -27,7 +27,7 @@ Entry *TT_ptr = new Entry[n_entries];
 std::string to_string(uint64_t x) {
   std::string result{};
   result.resize(64, '0');
-  for (int i = 0; x > 0; ++i) {
+  for (int i = 63; x > 0; --i) {
     result[i] = (x & 1) ? '1' : '0';
     x >>= 1;
   }
@@ -50,22 +50,28 @@ template <size_t moves, bool debug = false> struct State {
     return actions;
   }
 
-  bool player_one_move() const { return !(data >> 63); }
+  // player one to move if most sig bit is 0
+  bool player_one_to_move() const { return !(data >> 63); }
 
   // Designed to cause transpositions of the state
   void apply_move(const int action) {
     uint64_t next_player_bit = (data >> 63) ^ 1;
-    static int diffs[]{2, 3, 5, 7, 11};
-    std::cout << to_string(data) << " :start - apply move" << std::endl;
+    const int offset = player_one_to_move() ? 0 : 1;
+
+    static int diffs[]{2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+    // std::cout << to_string(data) << " :start - apply move" << std::endl;
     data = (data << 1) >> 1;
-    std::cout << to_string(data) << " :no player bit - apply move" << std::endl;
-    for (int i = 0; i < diffs[action]; ++i) {
+    // std::cout << to_string(data) << " :no player bit - apply move" <<
+    // std::endl;
+    const int index = 2 * action + offset;
+    for (int i = 0; i < diffs[index]; ++i) {
       data = xorshift(data);
-      std::cout << to_string(data) << " :shift - apply move" << std::endl;
+      //   std::cout << to_string(data) << " :shift - apply move" << std::endl;
     }
+    data = b(data);
     data = data ^ (next_player_bit << 63);
-    std::cout << to_string(data) << " :end - apply move" << std::endl;
-    std::cout << std::endl;
+    // std::cout << to_string(data) << " :end - apply move" << std::endl;
+    // std::cout << std::endl;
   }
 
   uint64_t value() const { return data & 0xFF; }
@@ -77,22 +83,43 @@ template <size_t moves, bool debug = false> struct State {
     x ^= x >> 17;
     return x;
   }
+
+  uint64_t b(uint64_t x) const {
+    x ^= x >> 12;
+    x ^= (x << (25 + 1)) >> 1;
+    x ^= x >> 27;
+    return x;
+  }
+};
+
+struct BaseData {
+  BaseData(int depth_remaining) : depth_remaining{depth_remaining} {}
+
+  int depth_remaining;
+  size_t count{};
+  size_t cache_hits{};
 };
 
 // self explanatory - just regular alpha beta, very easy to implement
 template <typename State, bool use_tt>
-uint64_t alpha_beta(const State &state, int &depth_remaining, size_t &count,
-                    uint64_t alpha = 0, uint64_t beta = 255) {
-  ++count;
+uint64_t alpha_beta(const State &state, BaseData &base_data, uint64_t alpha = 0,
+                    uint64_t beta = 255) {
+  int &depth_remaining = base_data.depth_remaining;
+  size_t &count = base_data.count;
+  size_t &cache_hits = base_data.cache_hits;
 
   if (depth_remaining == 0) {
     return state.value();
   }
 
+  ++count;
+
   uint32_t hash;
   if constexpr (use_tt) {
     hash = (state.data << hash_bits_comp) >> hash_bits_comp;
+
     if (TT_ptr[hash].is_set()) {
+      ++cache_hits;
       return TT_ptr[hash].value;
     }
   }
@@ -106,12 +133,11 @@ uint64_t alpha_beta(const State &state, int &depth_remaining, size_t &count,
     state_copy.apply_move(move);
 
     --depth_remaining;
-    uint64_t value = alpha_beta<State, use_tt>(state_copy, depth_remaining,
-                                               count, alpha, beta);
+    value = alpha_beta<State, use_tt>(state_copy, base_data, alpha, beta);
     ++depth_remaining;
   };
 
-  if (state.player_one_move()) {
+  if (state.player_one_to_move()) {
     for (const int move : moves) {
       go(move);
       if (value >= alpha) {
@@ -149,29 +175,36 @@ uint64_t alpha_beta(const State &state, int &depth_remaining, size_t &count,
 constexpr uint64_t initial_state_data = 4923481029348345ULL;
 
 void test() {
-  // uint64_t last_index = 1ULL << 32;
-  // last_index -= 1;
-  // TT_ptr[last_index] = {1, 1};
-  // std::cout << "Hi" << std::endl;
+  State<4> state{initial_state_data};
+  auto state_a{state};
+  auto state_b{state};
 
+  state_a.apply_move(0);
+  state_a.apply_move(1);
+  state_b.apply_move(1);
+  state_b.apply_move(0);
+
+  std::cout << state_a.data << std::endl;
+  std::cout << state_b.data << std::endl;
+}
+
+void search() {
   State<4> state{initial_state_data};
 
-  std::cout << "Initial State Moves:" << std::endl;
-  for (const auto move : state.get_moves()) {
-    std::cout << move << ' ';
-  }
-  std::cout << std::endl;
+  const int max_depth = 15;
+  BaseData base_data{max_depth};
 
-  size_t count{};
-  int depth_remaining{1};
-  alpha_beta<State<4>, false>(state, depth_remaining, count);
+  const auto root_value = alpha_beta<State<4>, true>(state, base_data);
 
-  int x;
-  std::cin >> x;
+  std::cout << "depth: " << base_data.depth_remaining << std::endl;
+  std::cout << "count: " << base_data.count << std::endl;
+  std::cout << "cache hits: " << base_data.cache_hits << std::endl;
+  std::cout << "root_value: " << root_value << std::endl;
+  std::cout << "root value estimate: " << state.value() << std::endl;
 }
 
 int main() {
-  // State<4> state{initial_state_data};
-  test();
+  //   test();
+  search();
   return 0;
 }
